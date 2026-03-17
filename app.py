@@ -49,14 +49,14 @@ def load_sudoku_model(path, ConvNet, device):
 def predict_with_confidence(model, cells, device, confidence_threshold=0.85):
     """توقع الأرقام محلياً مع حساب نسبة الثقة لكل خلية."""
     grid = []
-    low_confidence_cells = [] # قائمة لتخزين الخلايا المشكوك فيها
+    low_confidence_cells = [] 
     
     with torch.no_grad():
         for i, cell in enumerate(cells):
             row, col = i // 9, i % 9
             
-            # تجهيز الخلية للنموذج (تأكد من أن هذه الخطوة تطابق معالجة الصور في كودك الأصلي)
-            tensor_cell = torch.FloatTensor(cell).unsqueeze(0).unsqueeze(0).to(device)
+            # تم إضافة .repeat(1, 3, 1, 1) لحل مشكلة القنوات (تحويل 1 Channel إلى 3 Channels)
+            tensor_cell = torch.FloatTensor(cell).unsqueeze(0).unsqueeze(0).repeat(1, 3, 1, 1).to(device)
             
             output = model(tensor_cell)
             probabilities = F.softmax(output, dim=1)
@@ -81,10 +81,8 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.85):
 def validate_cell_with_gemini(cell_image, api_key):
     """إرسال صورة الخلية المشكوك فيها إلى Gemini للتحقق منها."""
     genai.configure(api_key=api_key)
-    # استخدام نموذج فلاش لأنه سريع جداً وممتاز في الرؤية
     model = genai.GenerativeModel('gemini-1.5-flash') 
     
-    # تحويل الخلية (Numpy Array) إلى صورة PIL
     pil_img = Image.fromarray(cell_image)
     
     prompt = "This is a single cell from a Sudoku grid. What single digit (1-9) is in this image? If the cell is completely empty or you cannot read any digit, return 0. Output ONLY the single number and nothing else."
@@ -95,7 +93,7 @@ def validate_cell_with_gemini(cell_image, api_key):
         if 0 <= digit <= 9:
             return digit
     except Exception as e:
-        return -1 # في حال حدوث خطأ
+        return -1 
     return -1
 
 # --- التطبيق الرئيسي ---
@@ -140,7 +138,7 @@ if uploaded_file is not None:
                     st.session_state.coords = coords
                     st.session_state.ai_logs = []
 
-                    # 3. التحقق باستخدام Gemini (إذا تم إدخال المفتاح وهناك خلايا مشكوك فيها)
+                    # 3. التحقق باستخدام Gemini
                     if gemini_api_key and low_conf_cells:
                         st.info(f"تم العثور على {len(low_conf_cells)} خلايا مشكوك فيها. جاري التحقق باستخدام Gemini...")
                         for cell_data in low_conf_cells:
@@ -149,7 +147,6 @@ if uploaded_file is not None:
                             local_digit = cell_data['digit']
                             
                             if gemini_digit != -1 and gemini_digit != local_digit:
-                                # تحديث الشبكة بتوقع Gemini الأقوى
                                 grid_predictions[r][c] = gemini_digit
                                 st.session_state.ai_logs.append(f"🔄 تم تصحيح الصف {r+1}، العمود {c+1}: من {local_digit} إلى {gemini_digit} بواسطة VLM.")
                             else:
@@ -160,7 +157,9 @@ if uploaded_file is not None:
                     st.session_state.grid_predictions = grid_predictions
 
             except Exception as e:
+                import traceback
                 st.error(f"حدث خطأ أثناء الاستخراج: {e}")
+                st.write(traceback.format_exc())
 
     # --- عرض النتائج والحل ---
     if st.session_state.grid_predictions is not None:
@@ -193,6 +192,6 @@ if uploaded_file is not None:
                 else:
                     st.error("لا يوجد حل صحيح للأرقام الحالية. يرجى التحقق من وجود أرقام مكررة أو خاطئة.")
                     
-        if st.button("إعادة تعيين"):
+        if st.button("إعادة تعيين / رفع صورة جديدة"):
             st.session_state.grid_predictions = None
             st.rerun()
