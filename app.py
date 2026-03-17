@@ -8,6 +8,7 @@ from PIL import Image
 import pandas as pd
 import base64
 from io import BytesIO
+import re
 from groq import Groq # مكتبة Groq الجديدة
 
 # --- إعدادات الصفحة ---
@@ -142,10 +143,23 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.70):
 
 def validate_cell_with_groq(cell_image, client):
     """إرسال الخلية إلى Groq للتحقق باستخدام نموذج Llama 3.2 Vision"""
+    
+    # إصلاح نوع بيانات الصورة (تحويل الأرقام العشرية إلى أعداد صحيحة)
+    if cell_image.dtype != np.uint8:
+        if cell_image.max() <= 1.0: # إذا كانت القيم بين 0 و 1
+            cell_image = (cell_image * 255).astype(np.uint8)
+        else:
+            cell_image = cell_image.astype(np.uint8)
+
     enlarged_cell = cv2.resize(
         cell_image, (150, 150), interpolation=cv2.INTER_LANCZOS4
     )
+    
     pil_img = Image.fromarray(enlarged_cell)
+    
+    # التأكد من تحويل الصورة إلى وضع مدعوم من JPEG (RGB)
+    if pil_img.mode not in ("L", "RGB"):
+        pil_img = pil_img.convert("RGB")
     
     # تحويل الصورة إلى Base64
     buffered = BytesIO()
@@ -179,7 +193,7 @@ def validate_cell_with_groq(cell_image, client):
                     ]
                 }
             ],
-            temperature=0, # للحصول على إجابات دقيقة ومباشرة
+            temperature=0, 
             max_tokens=10
         )
         
@@ -187,7 +201,6 @@ def validate_cell_with_groq(cell_image, client):
         content = response.choices[0].message.content.strip()
         
         # التأكد من أن الرد يحتوي على أرقام فقط
-        import re
         numbers = re.findall(r'\d+', content)
         if numbers:
             digit = int(numbers[0])
