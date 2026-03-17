@@ -114,6 +114,12 @@ def process_sudoku_image(image, invert_for_mnist_compatibility=True):
 
         for cell in cells_data:
             gray = cv2.cvtColor(cell["image"], cv2.COLOR_BGR2GRAY)
+            
+            # Crop 10% from every side to ensure grid lines are not captured
+            h_c, w_c = gray.shape
+            crop_h = int(h_c * 0.12)
+            crop_w = int(w_c * 0.12)
+            gray = gray[crop_h:h_c-crop_h, crop_w:w_c-crop_w]
 
             if invert_for_mnist_compatibility:
                 # MNIST format: black background, white digits
@@ -126,7 +132,37 @@ def process_sudoku_image(image, invert_for_mnist_compatibility=True):
                     gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
                 )
 
-            processed = cv2.resize(binary, (28, 28)) / 255.0
+            # Center digit by finding bounding box, then resizing into a 28x28 array
+            coords_nonzero = cv2.findNonZero(binary)
+            
+            # If the cell is completely empty (less than 2% white pixels)
+            white_pixels = cv2.countNonZero(binary)
+            if white_pixels < (binary.size * 0.02) or coords_nonzero is None:
+                processed = np.zeros((28, 28), dtype=np.uint8) / 255.0
+            else:
+                x, y, w, h = cv2.boundingRect(coords_nonzero)
+                
+                # Extract just the digit
+                digit = binary[y:y+h, x:x+w]
+                
+                # Resize keeping aspect ratio so the max dimension is 20 pixels
+                max_dim = max(w, h)
+                scale = 20.0 / max_dim
+                new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+                
+                digit_resized = cv2.resize(digit, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                
+                # Place in the center of a 28x28 black image (MNIST style)
+                centered = np.zeros((28, 28), dtype=np.uint8)
+                start_y = (28 - new_h) // 2
+                start_x = (28 - new_w) // 2
+                centered[start_y:start_y+new_h, start_x:start_x+new_w] = digit_resized
+                
+                # Only use the centered image if MNIST compatibility is requested
+                if invert_for_mnist_compatibility:
+                    processed = centered / 255.0
+                else:
+                    processed = cv2.resize(binary, (28, 28)) / 255.0
 
             processed_cells.append(processed)
             coords.append(cell["coords"])
