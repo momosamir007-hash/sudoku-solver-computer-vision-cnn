@@ -6,6 +6,8 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 import pandas as pd
+import subprocess
+import sys
 
 # --- إعدادات الصفحة ---
 st.set_page_config(
@@ -23,6 +25,8 @@ st.markdown(
 # --- القائمة الجانبية ---
 st.sidebar.header("Configuration")
 models_dir = "models"
+
+# التحقق من وجود مجلد النماذج
 if not os.path.exists(models_dir):
     st.sidebar.error("⚠️ مجلد 'models' غير موجود!")
     st.stop()
@@ -38,6 +42,51 @@ selected_model_file = st.sidebar.selectbox(
 model_path = os.path.join(models_dir, selected_model_file)
 
 st.sidebar.info("ℹ️ طبقة التحقق السحابية معطلة حالياً. يتم استخدام النموذج المحلي فقط.")
+
+# --- قسم تدريب النموذج في القائمة الجانبية ---
+st.sidebar.divider()
+st.sidebar.header("🛠️ أدوات المطور (تدريب)")
+st.sidebar.info("يمكنك تدريب نموذج جديد بأحدث البيانات مباشرة من هنا.")
+
+if st.sidebar.button("🚀 بدء تدريب نموذج جديد"):
+    st.sidebar.warning("⚠️ جاري التدريب... يرجى عدم إغلاق الصفحة. قد يستغرق الأمر عدة دقائق.")
+    
+    # مكان فارغ لعرض سجل التدريب (Logs) في الوقت الفعلي
+    log_placeholder = st.sidebar.empty()
+    output_log = ""
+    
+    try:
+        # تجهيز أمر التشغيل للسكربت
+        cmd = [sys.executable, "train.py", "--model", "convnet", "--dataset", "sudoku"]
+        
+        # تشغيل السكربت في الخلفية وقراءة المخرجات
+        process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.STDOUT, 
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        # قراءة السجل سطراً بسطر وعرضه في الواجهة
+        for line in process.stdout:
+            output_log += line
+            # عرض آخر 15 سطر لتجنب بطء الواجهة
+            display_text = "\n".join(output_log.splitlines()[-15:])
+            log_placeholder.code(display_text, language="bash")
+            
+        process.wait() # الانتظار حتى تنتهي العملية
+        
+        if process.returncode == 0:
+            st.sidebar.success("✅ انتهى التدريب بنجاح! تم حفظ النموذج الجديد.")
+            st.sidebar.info("🔄 يرجى إعادة تحميل الصفحة (Refresh) لتحديث قائمة النماذج.")
+        else:
+            st.sidebar.error("❌ حدث خطأ أثناء التدريب. راجع السجل أعلاه.")
+            
+    except Exception as e:
+        st.sidebar.error(f"حدث خطأ غير متوقع: {e}")
+
 
 # --- تحميل النماذج الأساسية ---
 @st.cache_resource
