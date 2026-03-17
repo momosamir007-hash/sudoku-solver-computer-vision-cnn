@@ -15,17 +15,20 @@ st.set_page_config(
 )
 
 st.title("🧩 Sudoku Solver AI")
-st.markdown("قم برفع صورة للغز سودوكو، وسيقوم الذكاء الاصطناعي باستخراجها. سيتم التحقق من الأرقام المشكوك فيها باستخدام **طبقة تحقق ثانية (Gemini Vision)**.")
+st.markdown("قم برفع صورة للغز سودوكو، وسيقوم الذكاء الاصطناعي باستخراجها. سيتم التحقق من الأرقام المشكوك فيها تلقائياً باستخدام **طبقة تحقق ثانية (Gemini Vision)**.")
+
+# --- جلب مفتاح API من Secrets ---
+try:
+    gemini_api_key = st.secrets["GEMINI_API_KEY"]
+except KeyError:
+    st.error("⚠️ لم يتم العثور على مفتاح Gemini API في إعدادات الأمان (Secrets). يرجى إضافته لتعمل طبقة التحقق الثانية.")
+    gemini_api_key = None
 
 # --- القائمة الجانبية والإعدادات ---
 st.sidebar.header("Configuration")
 model_files = [f for f in os.listdir("models") if f.endswith('.pkl')]
 selected_model_file = st.sidebar.selectbox("Select Pre-trained Model", model_files)
 model_path = os.path.join("models", selected_model_file)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("طبقة التحقق الثانية (VLM)")
-gemini_api_key = st.sidebar.text_input("أدخل مفتاح Google Gemini API:", type="password", help="يُستخدم للتحقق من الأرقام التي يكون النموذج المحلي غير متأكد منها.")
 
 # --- تحميل النماذج الأساسية ---
 @st.cache_resource
@@ -46,7 +49,7 @@ def load_sudoku_model(path, ConvNet, device):
     return model
 
 # --- دوال التوقع والتحقق ---
-def predict_with_confidence(model, cells, device, confidence_threshold=0.85):
+def predict_with_confidence(model, cells, device, confidence_threshold=0.70):
     """توقع الأرقام محلياً مع حساب نسبة الثقة لكل خلية."""
     grid = []
     low_confidence_cells = [] 
@@ -55,7 +58,7 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.85):
         for i, cell in enumerate(cells):
             row, col = i // 9, i % 9
             
-            # تم إضافة .repeat(1, 3, 1, 1) لحل مشكلة القنوات (تحويل 1 Channel إلى 3 Channels)
+            # حل مشكلة القنوات (تحويل 1 Channel إلى 3 Channels)
             tensor_cell = torch.FloatTensor(cell).unsqueeze(0).unsqueeze(0).repeat(1, 3, 1, 1).to(device)
             
             output = model(tensor_cell)
@@ -79,13 +82,20 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.85):
     return grid_9x9, low_confidence_cells
 
 def validate_cell_with_gemini(cell_image, api_key):
-    """إرسال صورة الخلية المشكوك فيها إلى Gemini للتحقق منها."""
+    """تنظيف وتكبير الخلية ثم إرسالها إلى Gemini للتحقق منها بدقة عالية."""
+    # 1. تنظيف الصورة: إزالة 15% من الحواف للتخلص من خطوط الشبكة السوداء
+    h, w = cell_image.shape[:2]
+    crop_h, crop_w = int(h * 0.15), int(w * 0.15)
+    clean_cell = cell_image[crop_h:h-crop_h, crop_w:w-crop_w]
+    
+    # 2. تكبير الصورة ليقرأها VLM بوضوح
+    enlarged_cell = cv2.resize(clean_cell, (150, 150), interpolation=cv2.INTER_LANCZOS4)
+    pil_img = Image.fromarray(enlarged_cell)
+    
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash') 
     
-    pil_img = Image.fromarray(cell_image)
-    
-    prompt = "This is a single cell from a Sudoku grid. What single digit (1-9) is in this image? If the cell is completely empty or you cannot read any digit, return 0. Output ONLY the single number and nothing else."
+    prompt = "This is a single cell from a Sudoku grid. What single digit (1-9) is in this image? If the cell is completely empty, blank, or you cannot read any clear digit, return 0. Output ONLY the single number and nothing else."
     
     try:
         response = model.generate_content([prompt, pil_img])
@@ -132,7 +142,7 @@ if uploaded_file is not None:
                 else:
                     # 2. التوقع المحلي + حساب الثقة
                     model = load_sudoku_model(model_path, ConvNet_class, dev)
-                    grid_predictions, low_conf_cells = predict_with_confidence(model, cells, dev, confidence_threshold=0.85)
+                    grid_predictions, low_conf_cells = predict_with_confidence(model, cells, dev, confidence_threshold=0.70)
                     
                     st.session_state.warped = warped
                     st.session_state.coords = coords
@@ -140,7 +150,7 @@ if uploaded_file is not None:
 
                     # 3. التحقق باستخدام Gemini
                     if gemini_api_key and low_conf_cells:
-                        st.info(f"تم العثور على {len(low_conf_cells)} خلايا مشكوك فيها. جاري التحقق باستخدام Gemini...")
+                        st.info(f"تم العثور على {len(low_conf_cells)} خلايا مشكوك فيها. جاري التحقق التلقائي...")
                         for cell_data in low_conf_cells:
                             gemini_digit = validate_cell_with_gemini(cell_data['image'], gemini_api_key)
                             r, c = cell_data['row'], cell_data['col']
@@ -148,11 +158,11 @@ if uploaded_file is not None:
                             
                             if gemini_digit != -1 and gemini_digit != local_digit:
                                 grid_predictions[r][c] = gemini_digit
-                                st.session_state.ai_logs.append(f"🔄 تم تصحيح الصف {r+1}، العمود {c+1}: من {local_digit} إلى {gemini_digit} بواسطة VLM.")
+                                st.session_state.ai_logs.append(f"🔄 تصحيح (الصف {r+1}، العمود {c+1}): من {local_digit} إلى {gemini_digit}.")
                             else:
-                                st.session_state.ai_logs.append(f"✅ VLM أكد الرقم {local_digit} في الصف {r+1}، العمود {c+1}.")
+                                st.session_state.ai_logs.append(f"✅ تأكيد (الصف {r+1}، العمود {c+1}): الرقم {local_digit}.")
                     elif not gemini_api_key and low_conf_cells:
-                        st.warning(f"تم العثور على {len(low_conf_cells)} خلايا ذات دقة منخفضة. أدخل مفتاح Gemini في القائمة الجانبية لتفعيل التحقق التلقائي، أو راجعها يدوياً.")
+                        st.warning(f"يوجد {len(low_conf_cells)} خلايا مشكوك فيها. يرجى مراجعتها يدوياً لعدم توفر مفتاح Gemini.")
 
                     st.session_state.grid_predictions = grid_predictions
 
@@ -163,10 +173,11 @@ if uploaded_file is not None:
 
     # --- عرض النتائج والحل ---
     if st.session_state.grid_predictions is not None:
-        st.subheader("2. الشبكة المستخرجة (بعد التحقق)")
+        st.subheader("2. الشبكة المستخرجة")
+        st.markdown("يرجى إلقاء نظرة سريعة. إذا كانت الأرقام صحيحة، اضغط على حل.")
         
         if st.session_state.ai_logs:
-            with st.expander("تفاصيل تحقق الذكاء الاصطناعي السحابي (Logs)"):
+            with st.expander("تفاصيل تحقق الذكاء الاصطناعي السحابي"):
                 for log in st.session_state.ai_logs:
                     st.write(log)
         
