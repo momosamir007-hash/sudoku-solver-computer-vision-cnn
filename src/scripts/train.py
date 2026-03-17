@@ -31,7 +31,7 @@ class AugmentedDataset(torch.utils.data.Dataset):
 
 # --- دالة التدريب الاحترافية (تتضمن Early Stopping و LR Scheduler) ---
 def train_model_with_early_stopping(model, train_loader, criterion, optimizer, device, num_epochs=10, patience=5):
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
     
     best_model_wts = copy.deepcopy(model.state_dict())
     best_loss = float('inf')
