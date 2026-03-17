@@ -138,7 +138,7 @@ def validate_cell_with_gemini(cell_image):
         cell_image, (150, 150), interpolation=cv2.INTER_LANCZOS4
     )
     pil_img = Image.fromarray(enlarged_cell)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     prompt = (
         "This is a single cell from a Sudoku grid. "
         "What single digit (1-9) is in this image? "
