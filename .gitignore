@@ -91,3 +91,7 @@ models/
 !models/50epochs_convnet_sudoku_only.pkl
 .mypy_cache/
 
+# Ignore test images and results
+*.jpg
+!sudoku.jpg
+results/
