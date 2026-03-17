@@ -178,7 +178,7 @@ def validate_cell_with_groq(cell_image, client):
     try:
         # استخدام نموذج الرؤية المدعوم من Groq
         response = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            model="llama-3.2-90b-vision-preview",
             messages=[
                 {
                     "role": "user",
