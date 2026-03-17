@@ -6,10 +6,6 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 import pandas as pd
-import base64
-from io import BytesIO
-import re
-from groq import Groq # مكتبة Groq الجديدة
 
 # --- إعدادات الصفحة ---
 st.set_page_config(
@@ -20,22 +16,9 @@ st.set_page_config(
 
 st.title("🧩 Sudoku Solver AI")
 st.markdown(
-    "قم برفع صورة للغز سودوكو، وسيقوم الذكاء الاصطناعي باستخراجها. "
-    "سيتم التحقق من الأرقام المشكوك فيها تلقائياً باستخدام "
-    "**طبقة تحقق ثانية فائقة السرعة (Groq Vision)**."
+    "قم برفع صورة للغز سودوكو، وسيقوم نموذج الذكاء الاصطناعي المحلي (CNN) باستخراجها. "
+    "يمكنك مراجعة الأرقام وتعديلها يدوياً في الجدول قبل حل اللغز."
 )
-
-# --- جلب مفتاح API من Secrets ---
-groq_api_key = None
-groq_client = None
-try:
-    groq_api_key = st.secrets["GROQ_API_KEY"]
-    groq_client = Groq(api_key=groq_api_key) # تهيئة عميل Groq
-except KeyError:
-    st.sidebar.error(
-        "⚠️ لم يتم العثور على مفتاح GROQ_API_KEY. "
-        "يرجى إضافته في إعدادات Secrets لتعمل طبقة التحقق الثانية."
-    )
 
 # --- القائمة الجانبية ---
 st.sidebar.header("Configuration")
@@ -54,8 +37,7 @@ selected_model_file = st.sidebar.selectbox(
 )
 model_path = os.path.join(models_dir, selected_model_file)
 
-if groq_api_key:
-    st.sidebar.success("✅ مفتاح Groq متصل وجاهز للتحقق السريع.")
+st.sidebar.info("ℹ️ طبقة التحقق السحابية معطلة حالياً. يتم استخدام النموذج المحلي فقط.")
 
 # --- تحميل النماذج الأساسية ---
 @st.cache_resource
@@ -84,7 +66,7 @@ def load_sudoku_model(path, _ConvNet, device):
     model.eval()
     return model
 
-# --- دوال التوقع والتحقق ---
+# --- دوال التوقع ---
 def predict_with_confidence(model, cells, device, confidence_threshold=0.70):
     grid = []
     low_confidence_cells = []
@@ -133,84 +115,11 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.70):
                         "col": col,
                         "digit": digit,
                         "confidence": confidence,
-                        "image": clean_cell,
                     }
                 )
                 
     grid_9x9 = [grid[i : i + 9] for i in range(0, 81, 9)]
     return grid_9x9, low_confidence_cells
-
-
-def validate_cell_with_groq(cell_image, client):
-    """إرسال الخلية إلى Groq للتحقق باستخدام نموذج Llama 3.2 Vision"""
-    
-    # إصلاح نوع بيانات الصورة (تحويل الأرقام العشرية إلى أعداد صحيحة)
-    if cell_image.dtype != np.uint8:
-        if cell_image.max() <= 1.0: # إذا كانت القيم بين 0 و 1
-            cell_image = (cell_image * 255).astype(np.uint8)
-        else:
-            cell_image = cell_image.astype(np.uint8)
-
-    enlarged_cell = cv2.resize(
-        cell_image, (150, 150), interpolation=cv2.INTER_LANCZOS4
-    )
-    
-    pil_img = Image.fromarray(enlarged_cell)
-    
-    # التأكد من تحويل الصورة إلى وضع مدعوم من JPEG (RGB)
-    if pil_img.mode not in ("L", "RGB"):
-        pil_img = pil_img.convert("RGB")
-    
-    # تحويل الصورة إلى Base64
-    buffered = BytesIO()
-    pil_img.save(buffered, format="JPEG")
-    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    base64_image = f"data:image/jpeg;base64,{img_str}"
-
-    prompt = (
-        "This is a single cell from a Sudoku grid. "
-        "What single digit (1-9) is in this image? "
-        "If the cell is completely empty, blank, or "
-        "you cannot read any clear digit, return 0. "
-        "Output ONLY the single number and nothing else."
-    )
-    
-    try:
-        # استخدام نموذج الرؤية المدعوم من Groq
-        response = client.chat.completions.create(
-            model="llama-3.2-90b-vision-preview",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": base64_image
-                            }
-                        }
-                    ]
-                }
-            ],
-            temperature=0, 
-            max_tokens=10
-        )
-        
-        # استخراج الرقم من الرد
-        content = response.choices[0].message.content.strip()
-        
-        # التأكد من أن الرد يحتوي على أرقام فقط
-        numbers = re.findall(r'\d+', content)
-        if numbers:
-            digit = int(numbers[0])
-            if 0 <= digit <= 9:
-                return digit
-        return -1
-    except Exception as e:
-        st.warning(f"خطأ Groq: {str(e)[:80]}")
-        return -1
-
 
 # --- Session State الأولية ---
 if "grid_predictions" not in st.session_state:
@@ -239,8 +148,8 @@ if uploaded_file is not None:
     st.subheader("1. الصورة الأصلية")
     st.image(pil_image, use_container_width=True)
 
-    if st.button("استخراج الشبكة والتحقق"):
-        with st.spinner("جاري المعالجة..."):
+    if st.button("استخراج الشبكة"):
+        with st.spinner("جاري المعالجة باستخدام النموذج المحلي..."):
             try:
                 (
                     ConvNet_class,
@@ -279,42 +188,18 @@ if uploaded_file is not None:
                     st.session_state.coords = coords
                     st.session_state.ai_logs = []
 
-                    # التحقق باستخدام Groq مع شريط تقدم
-                    if groq_client and low_conf_cells:
-                        st.info(
-                            f"تم العثور على {len(low_conf_cells)} "
-                            f"خلايا تحتاج تأكيد من Groq..."
-                        )
-                        progress = st.progress(0)
-                        
-                        for idx, cell_data in enumerate(low_conf_cells):
-                            groq_digit = validate_cell_with_groq(
-                                cell_data["image"], groq_client
-                            )
-                            r, c = cell_data["row"], cell_data["col"]
-                            local_digit = cell_data["digit"]
-
-                            if groq_digit != -1 and groq_digit != local_digit:
-                                grid_predictions[r][c] = groq_digit
-                                st.session_state.ai_logs.append(
-                                    f"🔄 تصحيح ({r+1},{c+1}): "
-                                    f"توقع محلي {local_digit} ← تصحيح Groq السريع {groq_digit}"
-                                )
-                            else:
-                                st.session_state.ai_logs.append(
-                                    f"✅ تأكيد ({r+1},{c+1}): "
-                                    f"الرقم {local_digit}"
-                                )
-                                
-                            progress.progress((idx + 1) / len(low_conf_cells))
-                            
-                        progress.empty()
-
-                    elif not groq_client and low_conf_cells:
+                    # تنبيه المستخدم بالخلايا ذات الثقة المنخفضة
+                    if low_conf_cells:
                         st.warning(
-                            f"يوجد {len(low_conf_cells)} خلايا "
-                            f"مشكوك فيها. راجعها يدوياً لعدم توفر مفتاح Groq."
+                            f"⚠️ تم العثور على {len(low_conf_cells)} خلايا مشكوك فيها. "
+                            f"يرجى مراجعة الجدول أدناه وتصحيح الأخطاء يدوياً قبل الحل."
                         )
+                        for cell_data in low_conf_cells:
+                            r, c = cell_data["row"], cell_data["col"]
+                            st.session_state.ai_logs.append(
+                                f"🔍 مراجعة يدوية مطلوبة للخلية ({r+1},{c+1}): "
+                                f"الرقم المتوقع {cell_data['digit']} (نسبة الثقة: {cell_data['confidence']:.2f})"
+                            )
 
                     st.session_state.grid_predictions = grid_predictions
 
@@ -325,14 +210,14 @@ if uploaded_file is not None:
 
 # --- عرض النتائج ---
 if st.session_state.grid_predictions is not None:
-    st.subheader("2. الشبكة المستخرجة")
+    st.subheader("2. الشبكة المستخرجة (قابلة للتعديل)")
     
     if st.session_state.debug_cell is not None:
         st.markdown("**🔍 نظرة النموذج لخلايا السودوكو (للتأكد من الألوان والقص):**")
         st.image(st.session_state.debug_cell, width=150, caption="خلية اختبارية (مُعالجة)")
     
     if st.session_state.ai_logs:
-        with st.expander("تفاصيل تحقق الذكاء الاصطناعي (Groq Logs)"):
+        with st.expander("تفاصيل الخلايا المشكوك فيها (تحتاج مراجعتك)"):
             for log in st.session_state.ai_logs:
                 st.write(log)
 
@@ -342,7 +227,7 @@ if st.session_state.grid_predictions is not None:
             st.session_state.warped,
             channels="BGR",
             use_container_width=True,
-            caption="صورة الشبكة المقصوصة",
+            caption="صورة الشبكة المقصوصة (راجعها مع الجدول)",
         )
         
     with col2:
@@ -350,6 +235,7 @@ if st.session_state.grid_predictions is not None:
             st.session_state.grid_predictions,
             columns=[str(i) for i in range(1, 10)],
         )
+        # الجدول التفاعلي للسماح للمستخدم بتصحيح الأرقام
         edited_df = st.data_editor(
             df, use_container_width=True, hide_index=True
         )
@@ -358,6 +244,7 @@ if st.session_state.grid_predictions is not None:
         with st.spinner("جاري الحل..."):
             _, solve_sudoku_logic, _, overlay_func, _ = load_ml_modules()
             
+            # أخذ القيم بعد التعديل اليدوي
             grid_solution = edited_df.values.astype(int).tolist()
 
             st.subheader("3. اللغز المحلول")
@@ -376,7 +263,7 @@ if st.session_state.grid_predictions is not None:
                 )
                 st.success("تم حل اللغز بنجاح! 🎉")
             else:
-                st.error("لا يوجد حل رياضي لهذه الأرقام. يرجى التحقق من عدم وجود أرقام مكررة أو خاطئة في الجدول.")
+                st.error("لا يوجد حل رياضي لهذه الأرقام. يرجى التحقق من عدم وجود أرقام مكررة أو خاطئة في الجدول قبل الضغط على حل.")
 
     if st.button("إعادة تعيين / صورة جديدة"):
         st.session_state.grid_predictions = None
