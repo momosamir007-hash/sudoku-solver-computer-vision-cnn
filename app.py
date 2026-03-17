@@ -64,7 +64,7 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.70):
             
             # --- تنظيف الخلية من خطوط الشبكة (فكرتك الممتازة) ---
             h, w = cell.shape[:2]
-            crop_h, crop_w = int(h * 0.12), int(w * 0.12) # قص 12% من كل جانب
+            crop_h, crop_w = int(h * 0.20), int(w * 0.20) # قص 12% من كل جانب
             cropped_cell = cell[crop_h:h-crop_h, crop_w:w-crop_w]
             
             # إعادة تحجيم الخلية إلى الحجم الأصلي الذي يتوقعه النموذج
