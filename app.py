@@ -6,7 +6,9 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 import pandas as pd
-import google.generativeai as genai
+import base64
+from io import BytesIO
+from groq import Groq # مكتبة Groq الجديدة
 
 # --- إعدادات الصفحة ---
 st.set_page_config(
@@ -19,17 +21,18 @@ st.title("🧩 Sudoku Solver AI")
 st.markdown(
     "قم برفع صورة للغز سودوكو، وسيقوم الذكاء الاصطناعي باستخراجها. "
     "سيتم التحقق من الأرقام المشكوك فيها تلقائياً باستخدام "
-    "**طبقة تحقق ثانية (Gemini Vision 2.5)**."
+    "**طبقة تحقق ثانية فائقة السرعة (Groq Vision)**."
 )
 
 # --- جلب مفتاح API من Secrets ---
-gemini_api_key = None
+groq_api_key = None
+groq_client = None
 try:
-    gemini_api_key = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=gemini_api_key)  # إعداد المفتاح مرة واحدة
+    groq_api_key = st.secrets["GROQ_API_KEY"]
+    groq_client = Groq(api_key=groq_api_key) # تهيئة عميل Groq
 except KeyError:
     st.sidebar.error(
-        "⚠️ لم يتم العثور على مفتاح Gemini API. "
+        "⚠️ لم يتم العثور على مفتاح GROQ_API_KEY. "
         "يرجى إضافته في إعدادات Secrets لتعمل طبقة التحقق الثانية."
     )
 
@@ -50,8 +53,8 @@ selected_model_file = st.sidebar.selectbox(
 )
 model_path = os.path.join(models_dir, selected_model_file)
 
-if gemini_api_key:
-    st.sidebar.success("✅ مفتاح Gemini متصل وجاهز للتحقق.")
+if groq_api_key:
+    st.sidebar.success("✅ مفتاح Groq متصل وجاهز للتحقق السريع.")
 
 # --- تحميل النماذج الأساسية ---
 @st.cache_resource
@@ -89,7 +92,7 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.70):
             row, col = i // 9, i % 9
             h, w = cell.shape[:2]
             
-            # ✅ تم تقليل القص إلى 10% لتجنب مسح الأرقام الكبيرة
+            # تقليل القص إلى 10% لتجنب مسح الأرقام الكبيرة
             crop_h = int(h * 0.10)
             crop_w = int(w * 0.10)  
             
@@ -102,13 +105,10 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.70):
                 cropped_cell, (w, h), interpolation=cv2.INTER_AREA
             )
             
-            # --- ميزة التصحيح (Debugging) ---
-            # حفظ إحدى الخلايا لنعرضها للمستخدم ليرى ما يراه النموذج
-            if i == 40: # الخلية رقم 40 تقع في منتصف الشبكة تقريباً
+            # حفظ إحدى الخلايا للـ Debugging
+            if i == 40:
                 st.session_state.debug_cell = clean_cell
-            # ---------------------------------
             
-            # ✅ إزالة القسمة على 255.0 (تمرير الصورة كما هي)
             tensor_cell = (
                 torch.FloatTensor(clean_cell)
                 .unsqueeze(0)
@@ -140,15 +140,19 @@ def predict_with_confidence(model, cells, device, confidence_threshold=0.70):
     return grid_9x9, low_confidence_cells
 
 
-def validate_cell_with_gemini(cell_image):
-    """إرسال الخلية إلى Gemini 2.5 للتحقق"""
+def validate_cell_with_groq(cell_image, client):
+    """إرسال الخلية إلى Groq للتحقق باستخدام نموذج Llama 3.2 Vision"""
     enlarged_cell = cv2.resize(
         cell_image, (150, 150), interpolation=cv2.INTER_LANCZOS4
     )
     pil_img = Image.fromarray(enlarged_cell)
     
-    # ✅ تحديث النموذج إلى gemini-2.5-flash ليعمل بدون أخطاء 404
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    # تحويل الصورة إلى Base64
+    buffered = BytesIO()
+    pil_img.save(buffered, format="JPEG")
+    img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    base64_image = f"data:image/jpeg;base64,{img_str}"
+
     prompt = (
         "This is a single cell from a Sudoku grid. "
         "What single digit (1-9) is in this image? "
@@ -156,17 +160,43 @@ def validate_cell_with_gemini(cell_image):
         "you cannot read any clear digit, return 0. "
         "Output ONLY the single number and nothing else."
     )
+    
     try:
-        response = model.generate_content([prompt, pil_img])
-        digit = int(response.text.strip())
-        if 0 <= digit <= 9:
-            return digit
-    except ValueError:
+        # استخدام نموذج الرؤية المدعوم من Groq
+        response = client.chat.completions.create(
+            model="llama-3.2-11b-vision-preview",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": base64_image
+                            }
+                        }
+                    ]
+                }
+            ],
+            temperature=0, # للحصول على إجابات دقيقة ومباشرة
+            max_tokens=10
+        )
+        
+        # استخراج الرقم من الرد
+        content = response.choices[0].message.content.strip()
+        
+        # التأكد من أن الرد يحتوي على أرقام فقط
+        import re
+        numbers = re.findall(r'\d+', content)
+        if numbers:
+            digit = int(numbers[0])
+            if 0 <= digit <= 9:
+                return digit
         return -1
     except Exception as e:
-        st.warning(f"خطأ Gemini: {str(e)[:80]}")
+        st.warning(f"خطأ Groq: {str(e)[:80]}")
         return -1
-    return -1
 
 
 # --- Session State الأولية ---
@@ -184,7 +214,6 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    # إعادة تعيين عند رفع صورة جديدة
     if st.session_state.uploaded_filename != uploaded_file.name:
         st.session_state.uploaded_filename = uploaded_file.name
         st.session_state.grid_predictions = None
@@ -237,26 +266,26 @@ if uploaded_file is not None:
                     st.session_state.coords = coords
                     st.session_state.ai_logs = []
 
-                    # التحقق باستخدام Gemini مع شريط تقدم
-                    if gemini_api_key and low_conf_cells:
+                    # التحقق باستخدام Groq مع شريط تقدم
+                    if groq_client and low_conf_cells:
                         st.info(
                             f"تم العثور على {len(low_conf_cells)} "
-                            f"خلايا تحتاج تأكيد من Gemini..."
+                            f"خلايا تحتاج تأكيد من Groq..."
                         )
                         progress = st.progress(0)
                         
                         for idx, cell_data in enumerate(low_conf_cells):
-                            gemini_digit = validate_cell_with_gemini(
-                                cell_data["image"]
+                            groq_digit = validate_cell_with_groq(
+                                cell_data["image"], groq_client
                             )
                             r, c = cell_data["row"], cell_data["col"]
                             local_digit = cell_data["digit"]
 
-                            if gemini_digit != -1 and gemini_digit != local_digit:
-                                grid_predictions[r][c] = gemini_digit
+                            if groq_digit != -1 and groq_digit != local_digit:
+                                grid_predictions[r][c] = groq_digit
                                 st.session_state.ai_logs.append(
                                     f"🔄 تصحيح ({r+1},{c+1}): "
-                                    f"توقع محلي {local_digit} ← تصحيح Gemini {gemini_digit}"
+                                    f"توقع محلي {local_digit} ← تصحيح Groq السريع {groq_digit}"
                                 )
                             else:
                                 st.session_state.ai_logs.append(
@@ -268,10 +297,10 @@ if uploaded_file is not None:
                             
                         progress.empty()
 
-                    elif not gemini_api_key and low_conf_cells:
+                    elif not groq_client and low_conf_cells:
                         st.warning(
                             f"يوجد {len(low_conf_cells)} خلايا "
-                            f"مشكوك فيها. راجعها يدوياً لعدم توفر مفتاح Gemini."
+                            f"مشكوك فيها. راجعها يدوياً لعدم توفر مفتاح Groq."
                         )
 
                     st.session_state.grid_predictions = grid_predictions
@@ -285,13 +314,12 @@ if uploaded_file is not None:
 if st.session_state.grid_predictions is not None:
     st.subheader("2. الشبكة المستخرجة")
     
-    # ✅ عرض صورة الخلية التجريبية للتشخيص
     if st.session_state.debug_cell is not None:
         st.markdown("**🔍 نظرة النموذج لخلايا السودوكو (للتأكد من الألوان والقص):**")
         st.image(st.session_state.debug_cell, width=150, caption="خلية اختبارية (مُعالجة)")
     
     if st.session_state.ai_logs:
-        with st.expander("تفاصيل تحقق الذكاء الاصطناعي (Gemini Logs)"):
+        with st.expander("تفاصيل تحقق الذكاء الاصطناعي (Groq Logs)"):
             for log in st.session_state.ai_logs:
                 st.write(log)
 
