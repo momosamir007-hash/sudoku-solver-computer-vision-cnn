@@ -57,7 +57,9 @@ if st.sidebar.button("🚀 بدء تدريب نموذج جديد"):
     
     try:
         # تجهيز أمر التشغيل للسكربت
-        cmd = [sys.executable, "src/scripts/train.py", "--model", "convnet", "--dataset", "sudoku"]
+                # أضفنا "-m" وقمنا بتغيير المسار ليصبح بنقاط بدلاً من الشرطات المائلة
+        cmd = [sys.executable, "-m", "src.scripts.train", "--model", "convnet", "--dataset", "sudoku"]
+
         # تشغيل السكربت في الخلفية وقراءة المخرجات
         process = subprocess.Popen(
             cmd, 
